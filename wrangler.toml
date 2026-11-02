@@ -6,3 +6,6 @@ compatibility_date = "2024-01-01"
 binding = "DB"
 database_name = "ficus-flow-db-master-test"
 database_id = "8a68bb90-ebd5-4ef9-953a-8ed506e8e893"
+[observability.logs]
+enabled = true
+invocation_logs = true
