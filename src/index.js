@@ -1,49 +1,85 @@
-function jsonResp(obj, status=200){return new Response(JSON.stringify(obj),{status,headers:{'Content-Type':'application/json'}})}
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    
+    // FIX: Accept BOTH old and new path - this is what broke at 22:58
+    const isWebhookPath = url.pathname === '/webhook' || url.pathname === '/webhooks/payments/razorpay';
+    
+    if (url.pathname === '/' || url.pathname === '/favicon.ico') {
+      return new Response('FICUS Flow Payment LIVE ✅ - ' + url.pathname, { status: 200 });
+    }
 
-export default{
- async fetch(request,env){
-  const url=new URL(request.url);
-  if(request.method!=='POST' && url.pathname==='/webhooks/payments/razorpay'){
-    return new Response('FICUS Flow Payment LIVE ✅ - POST /webhooks/payments/razorpay',{status:200})
+    if (!isWebhookPath) {
+      return new Response('Not Found', { status: 404 });
+    }
+
+    if (request.method !== 'POST') {
+      return new Response('Method Not Allowed', { status: 405 });
+    }
+
+    const rawBody = await request.text();
+    const signature = request.headers.get('x-razorpay-signature') || '';
+
+    // Verify signature
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey('raw', enc.encode(env.RAZORPAY_WEBHOOK_SECRET), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const sigBuf = await crypto.subtle.sign('HMAC', key, enc.encode(rawBody));
+    const expectedSig = [...new Uint8Array(sigBuf)].map(b => b.toString(16).padStart(2, '0')).join('');
+
+    if (expectedSig !== signature) {
+      console.log('INVALID SIGNATURE');
+      return new Response(JSON.stringify({ error: 'INVALID_SIGNATURE' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    let payload;
+    try {
+      payload = JSON.parse(rawBody);
+    } catch {
+      return new Response('Invalid JSON', { status: 400 });
+    }
+
+    const eventType = payload.event || 'unknown';
+    const entity = payload.payload?.payment?.entity || payload.payload?.payment_link?.entity || payload.payload?.order?.entity || payload;
+    const paymentId = entity.id || payload.event_id || 'evt_' + Date.now();
+
+    // Log like 18:25 version - you saw this in your screenshot
+    console.log(`WEBHOOK: ${eventType} ${paymentId}`);
+
+    const amount = Number(entity.amount || entity.amount_paid || entity.amount_due || 0);
+    const currency = (entity.currency || 'INR').toUpperCase();
+    const clientId = entity.notes?.client_id || payload.payload?.payment_link?.entity?.notes?.client_id || 'direct_link';
+    const invoiceId = entity.notes?.invoice_id || payload.payload?.payment_link?.entity?.notes?.invoice_id || 'direct_link';
+
+    try {
+      await env.DB.prepare(
+        `INSERT INTO payment_events (id, client_id, invoice_id, provider, provider_event_id, amount_paise, currency, status, payload_json, created_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(
+        crypto.randomUUID(),
+        clientId,
+        invoiceId,
+        'razorpay',
+        paymentId.toString(),
+        amount, // Razorpay already sends in paise (1000 = ₹10) - don't multiply
+        currency,
+        'captured',
+        rawBody,
+        new Date().toISOString()
+      ).run();
+
+      console.log(`INSERTED: ${paymentId} amount=${amount}`);
+      
+      return new Response(JSON.stringify({ ok: true, event: eventType, amount }), { 
+        status: 200, 
+        headers: { 'Content-Type': 'application/json' } 
+      });
+
+    } catch (err) {
+      console.error('DB ERROR:', err.message);
+      return new Response(JSON.stringify({ error: err.message }), { 
+        status: 500, 
+        headers: { 'Content-Type': 'application/json' } 
+      });
+    }
   }
-  if(url.pathname!=='/webhooks/payments/razorpay')return new Response('Not Found - use /webhooks/payments/razorpay',{status:404});
-  if(request.method!=='POST')return new Response('Method Not Allowed',{status:405});
-
-  const rawBody=await request.text();
-  const sig=request.headers.get('x-razorpay-signature')||'';
-  const enc=new TextEncoder();
-  const key=await crypto.subtle.importKey('raw',enc.encode(env.RAZORPAY_WEBHOOK_SECRET),{name:'HMAC',hash:'SHA-256'},false,['sign']);
-  const buf=await crypto.subtle.sign('HMAC',key,enc.encode(rawBody));
-  const hex=Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
-  if(hex!==sig)return jsonResp({error:'INVALID_SIGNATURE'},401);
-
-  let parsed;try{parsed=JSON.parse(rawBody)}catch{return jsonResp({error:'INVALID_JSON'},400)}
-  const entity=parsed?.payload?.payment?.entity||parsed?.payload?.payment_link?.entity||parsed;
-
-  const ev={
-    provider_event_id:(entity.id||parsed.event_id||'').toString(),
-    amount_paise:Number(entity.amount||entity.amount_paid||entity.amount_due||parsed.amount||0),
-    currency:(entity.currency||parsed.currency||'INR').toUpperCase(),
-    client_id:entity.notes?.client_id||parsed.notes?.client_id||entity.notes?.client_id||null,
-    invoice_id:entity.notes?.invoice_id||parsed.notes?.invoice_id||null
-  };
-
-  if(!ev.provider_event_id.trim())return jsonResp({error:'INVALID_EVENT_ID'},400);
-
-  // FALLBACK for direct Payment Links (your ₹10 tests)
-  if(!ev.client_id || !ev.invoice_id){
-   try{
-    await env.DB.prepare(`INSERT INTO payment_events (id,client_id,invoice_id,provider,provider_event_id,amount_paise,currency,status,payload_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
-    .bind(crypto.randomUUID(), 'direct_link', 'direct_link', 'razorpay', ev.provider_event_id, ev.amount_paise, ev.currency, 'captured', rawBody, new Date().toISOString()).run();
-    return jsonResp({ok:true,inserted:'direct_link',amount:ev.amount_paise},200);
-   }catch(e){return jsonResp({error:e.message},500)}
-  }
-
-  // Normal flow with client/invoice
-  try{
-   await env.DB.prepare(`INSERT INTO payment_events (id,client_id,invoice_id,provider,provider_event_id,amount_paise,currency,status,payload_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
-   .bind(crypto.randomUUID(), ev.client_id, ev.invoice_id, 'razorpay', ev.provider_event_id, ev.amount_paise, ev.currency, 'captured', rawBody, new Date().toISOString()).run();
-   return jsonResp({ok:true,amount:ev.amount_paise},200);
-  }catch(e){return jsonResp({error:e.message},500)}
- }
 }
