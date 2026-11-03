@@ -3,12 +3,16 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === '/') {
-      return new Response('Ficus Flow LIVE ✅', { status: 200 });
+      return new Response('Ficus Flow LIVE ✅ - ' + url.pathname, { status: 200 });
     }
 
-    // Allow both /webhook and /webhooks/payments/razorpay
-    if (!url.pathname.startsWith('/webhook')) {
-      return new Response('Not Found', { status: 404 });
+    // FIX: Accept /webhook AND /webhooks/payments/razorpay
+    const isWebhook = url.pathname === '/webhook' 
+                   || url.pathname.startsWith('/webhooks/') 
+                   || url.pathname.includes('razorpay');
+    
+    if (!isWebhook) {
+      return new Response('Not Found: ' + url.pathname, { status: 404 });
     }
 
     if (request.method !== 'POST') {
@@ -20,15 +24,14 @@ export default {
     try { body = JSON.parse(rawBody); } 
     catch { return new Response('Bad JSON', { status: 400 }); }
 
-    // FINAL FIX - This gets pay_xxxxx correctly
     const payment = body.payload?.payment?.entity;
     const link = body.payload?.payment_link?.entity;
 
-    const paymentId = payment?.id || null;
+    const paymentId = payment?.id || null;  // pay_xxxxx
     const linkId = link?.id || null;
-    const amount = payment?.amount || 0;
+    const amount = payment?.amount || link?.amount || 0;
     const event = body.event || 'payment.captured';
-    const email = payment?.email || '';
+    const email = payment?.email || link?.customer?.email || '';
 
     try {
       await env.DB.prepare(
