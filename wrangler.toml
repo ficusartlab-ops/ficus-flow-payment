@@ -1,8 +1,7 @@
 name = "ficus-flow-payment"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
-
 [[d1_databases]]
 binding = "DB"
 database_name = "ficus-flow-db"
-database_id = "8ad8b09b-cb45-4cf9-853a-8be2d4a0e693"
+database_id = "684ea1d2-18ae-4e83-91ca-99c37e4b3026"
