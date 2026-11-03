@@ -1,11 +1,12 @@
 name = "ficus-flow-payment"
-main = "src/index.js"
+main = "src/index.ts"
 compatibility_date = "2024-01-01"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "ficus-flow-db-master-test"
-database_id = "8a68bb90-ebd5-4ef9-953a-8ed506e8e893"
+database_id = "8ad8b09b-cb45-4cf9-853a-8be2d4a0e693"
+
 [observability.logs]
 enabled = true
 invocation_logs = true
